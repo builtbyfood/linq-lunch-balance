@@ -1,0 +1,275 @@
+[
+    {
+        "id": "linq-tab",
+        "type": "tab",
+        "label": "LINQ Meal Balance",
+        "disabled": false,
+        "info": "# LINQ Connect Meal Balance for Home Assistant\n\nFetches student meal balance from LINQ Connect and creates sensor.linq_meal_balance in Home Assistant via the HA REST API.\n\n## Required Environment Variables\nSet in Node-RED \u2192 hamburger menu \u2192 Settings \u2192 Environment Variables:\n\n| Variable | Description | Example |\n|---|---|---|\n| LINQ_USERNAME | Your LINQ Connect email | you@email.com |\n| LINQ_PASSWORD | Your LINQ Connect password | |\n| LINQ_NUTRITION_URL | Your school GUID | xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx |\n| HA_TOKEN | HA Long-Lived Access Token | |\n| HA_URL | Your Home Assistant URL | http://homeassistant.local:8123 |\n\n## Getting HA_TOKEN\nHome Assistant \u2192 Profile (bottom left) \u2192 Security tab \u2192 Long-Lived Access Tokens \u2192 Create Token\n\n## Finding LINQ_NUTRITION_URL\nLog into linqconnect.com \u2192 DevTools \u2192 Network \u2192 Fetch/XHR \u2192 find FamilyOnlineStoreCartAccountItem request \u2192 copy the linq-nutrition-url header value.\n\n## Authentication\nThis flow uses Auth0 Resource Owner Password grant \u2014 a single direct login call.\nIf your account has MFA enabled this will not work; disable MFA in your LINQ account first.\n\n## Schedule\nRuns every Monday at 7:00 AM + once on deploy."
+    },
+    {
+        "id": "linq-inject",
+        "type": "inject",
+        "z": "linq-tab",
+        "name": "Weekly Mon 7am + on deploy",
+        "props": [],
+        "repeat": "",
+        "crontab": "0 7 * * 1",
+        "once": true,
+        "onceDelay": "10",
+        "topic": "",
+        "x": 180,
+        "y": 80,
+        "wires": [
+            [
+                "linq-check-token"
+            ]
+        ]
+    },
+    {
+        "id": "linq-check-token",
+        "type": "function",
+        "z": "linq-tab",
+        "name": "Cached token / refresh / login?",
+        "func": "const accessToken = flow.get('linq_access_token');\nconst tokenExpiry = flow.get('linq_token_expiry') || 0;\nconst refreshToken = flow.get('linq_refresh_token');\nconst now = Date.now();\n\n// Token still valid with 5 min buffer\nif (accessToken && now < tokenExpiry - 300000) {\n    node.status({ fill: 'green', shape: 'dot', text: 'Cached token OK' });\n    msg.access_token = accessToken;\n    return [msg, null, null];\n}\n\n// Have a refresh token \u2014 use it\nif (refreshToken) {\n    node.status({ fill: 'yellow', shape: 'dot', text: 'Refreshing token...' });\n    return [null, msg, null];\n}\n\n// No tokens \u2014 password login\nnode.status({ fill: 'blue', shape: 'dot', text: 'Logging in...' });\nreturn [null, null, msg];",
+        "outputs": 3,
+        "noerr": 0,
+        "x": 450,
+        "y": 80,
+        "wires": [
+            [
+                "linq-build-balance"
+            ],
+            [
+                "linq-build-refresh"
+            ],
+            [
+                "linq-password-login"
+            ]
+        ]
+    },
+    {
+        "id": "linq-password-login",
+        "type": "function",
+        "z": "linq-tab",
+        "name": "Password login (Auth0 ROPC)",
+        "func": "const username = env.get('LINQ_USERNAME');\nconst password = env.get('LINQ_PASSWORD');\n\nif (!username || !password) {\n    node.error('LINQ_USERNAME and LINQ_PASSWORD must be set as environment variables');\n    node.status({ fill: 'red', shape: 'ring', text: 'Missing credentials env vars' });\n    return null;\n}\n\n// Auth0 Resource Owner Password Credentials grant\n// Simpler than PKCE \u2014 single direct call with username/password\nmsg.url = 'https://accounts.linq.com/oauth/token';\nmsg.method = 'POST';\nmsg.headers = {\n    'content-type': 'application/json',\n    'auth0-client': 'eyJuYW1lIjoiQGF1dGgwL2F1dGgwLWFuZ3VsYXIiLCJ2ZXJzaW9uIjoiMi4yLjMiLCJlbnYiOnsiYW5ndWxhci9jb3JlIjoiMTYuMi41In19'\n};\nmsg.payload = {\n    grant_type: 'http://auth0.com/oauth/grant-type/password-realm',\n    realm: 'self-signup',\n    client_id: 'eMd9FrH4ev1X6thBwkgq3YbOYzCRxfKJ',\n    username: username,\n    password: password,\n    audience: 'https://api.linqconnect.com',\n    scope: 'openid profile email read:api write:api offline_access'\n};\n\nnode.status({ fill: 'blue', shape: 'dot', text: 'Sending login...' });\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 220,
+        "y": 220,
+        "wires": [
+            [
+                "linq-get-token"
+            ]
+        ]
+    },
+    {
+        "id": "linq-build-refresh",
+        "type": "function",
+        "z": "linq-tab",
+        "name": "Build refresh request",
+        "func": "msg.url = 'https://accounts.linq.com/oauth/token';\nmsg.method = 'POST';\nmsg.headers = { 'content-type': 'application/json' };\nmsg.payload = {\n    grant_type: 'refresh_token',\n    client_id: 'eMd9FrH4ev1X6thBwkgq3YbOYzCRxfKJ',\n    refresh_token: flow.get('linq_refresh_token')\n};\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 200,
+        "y": 160,
+        "wires": [
+            [
+                "linq-get-token"
+            ]
+        ]
+    },
+    {
+        "id": "linq-get-token",
+        "type": "http request",
+        "z": "linq-tab",
+        "name": "POST /oauth/token",
+        "method": "use",
+        "ret": "obj",
+        "paytoqs": "ignore",
+        "url": "",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "authType": "",
+        "x": 580,
+        "y": 190,
+        "wires": [
+            [
+                "linq-store-tokens"
+            ]
+        ]
+    },
+    {
+        "id": "linq-store-tokens",
+        "type": "function",
+        "z": "linq-tab",
+        "name": "Store tokens",
+        "func": "if (msg.statusCode !== 200 || !msg.payload.access_token) {\n    const err = msg.payload && msg.payload.error;\n    const desc = msg.payload && msg.payload.error_description;\n    \n    if (err === 'invalid_grant') {\n        // Refresh token expired \u2014 clear so next run does password login\n        flow.set('linq_refresh_token', null);\n        flow.set('linq_access_token', null);\n        flow.set('linq_token_expiry', 0);\n        node.warn('Refresh token expired \u2014 will re-login on next trigger');\n        node.status({ fill: 'yellow', shape: 'ring', text: 'Refresh expired' });\n    } else if (err === 'unauthorized_client' || err === 'access_denied') {\n        node.error('ROPC grant not enabled on this Auth0 client, or wrong connection. Error: ' + err + ' \u2014 ' + desc);\n        node.status({ fill: 'red', shape: 'ring', text: 'Login method unsupported: ' + err });\n    } else if (err === 'mfa_required') {\n        node.error('MFA is enabled on your LINQ account. Disable MFA at linqconnect.com first (Profile \u2192 Security).');\n        node.status({ fill: 'red', shape: 'ring', text: 'MFA required \u2014 disable in LINQ' });\n    } else {\n        node.error('Token error (' + msg.statusCode + '): ' + JSON.stringify(msg.payload), msg);\n        node.status({ fill: 'red', shape: 'ring', text: 'Token error ' + msg.statusCode });\n    }\n    return null;\n}\n\nconst expiresIn = msg.payload.expires_in || 86400;\nif (msg.payload.refresh_token) flow.set('linq_refresh_token', msg.payload.refresh_token);\nflow.set('linq_access_token', msg.payload.access_token);\nflow.set('linq_token_expiry', Date.now() + (expiresIn * 1000));\n\nmsg.access_token = msg.payload.access_token;\nnode.status({ fill: 'green', shape: 'dot', text: 'Logged in \u2713 ' + new Date().toLocaleTimeString() });\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 800,
+        "y": 190,
+        "wires": [
+            [
+                "linq-build-balance"
+            ]
+        ]
+    },
+    {
+        "id": "linq-build-balance",
+        "type": "function",
+        "z": "linq-tab",
+        "name": "Build balance request",
+        "func": "const nutritionUrl = env.get('LINQ_NUTRITION_URL') || '';\nif (!nutritionUrl) {\n    node.error('LINQ_NUTRITION_URL env var is not set');\n    node.status({ fill: 'red', shape: 'ring', text: 'Missing LINQ_NUTRITION_URL' });\n    return null;\n}\n\nmsg.url = 'https://api.linqconnect.com/api/FamilyOnlineStoreCartAccountItem';\nmsg.method = 'GET';\nmsg.headers = {\n    'authorization': 'Bearer ' + (msg.access_token || flow.get('linq_access_token')),\n    'linq-nutrition-url': nutritionUrl,\n    'accept': 'application/json, text/plain, */*',\n    'origin': 'https://linqconnect.com'\n};\nmsg.payload = {};\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 420,
+        "y": 380,
+        "wires": [
+            [
+                "linq-get-balance"
+            ]
+        ]
+    },
+    {
+        "id": "linq-get-balance",
+        "type": "http request",
+        "z": "linq-tab",
+        "name": "GET FamilyOnlineStoreCartAccountItem",
+        "method": "use",
+        "ret": "obj",
+        "paytoqs": "ignore",
+        "url": "",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "authType": "",
+        "x": 680,
+        "y": 380,
+        "wires": [
+            [
+                "linq-extract-balance"
+            ]
+        ]
+    },
+    {
+        "id": "linq-extract-balance",
+        "type": "function",
+        "z": "linq-tab",
+        "name": "Extract balance",
+        "func": "if (msg.statusCode === 401) {\n    flow.set('linq_access_token', null);\n    flow.set('linq_token_expiry', 0);\n    node.warn('401 \u2014 token cleared, will re-auth next trigger');\n    node.status({ fill: 'yellow', shape: 'ring', text: '401 \u2014 cleared' });\n    return null;\n}\n\nif (msg.statusCode !== 200 || !Array.isArray(msg.payload) || msg.payload.length === 0) {\n    node.error('Balance API error (' + msg.statusCode + '): ' + JSON.stringify(msg.payload), msg);\n    node.status({ fill: 'red', shape: 'ring', text: 'API error ' + msg.statusCode });\n    return null;\n}\n\nconst accounts = msg.payload;\nconst primary = accounts[0];\nconst balance = primary.CurrentBalance;\n\nmsg.balance = balance;\nmsg.linq_accounts = accounts;\nmsg.payload = {\n    state: String(balance.toFixed(2)),\n    attributes: {\n        unit_of_measurement: 'USD',\n        device_class: 'monetary',\n        state_class: 'measurement',\n        friendly_name: 'LINQ Meal Balance',\n        icon: 'mdi:food-apple',\n        student_name: primary.Names,\n        all_accounts: accounts.map(a => ({ name: a.Names, balance: a.CurrentBalance })),\n        last_updated: new Date().toISOString()\n    }\n};\n\nconst summary = accounts.map(a => a.Names.split(' ')[0] + ': $' + a.CurrentBalance.toFixed(2)).join(' | ');\nnode.status({\n    fill: balance < 10 ? 'yellow' : 'green',\n    shape: 'dot',\n    text: summary + ' \u2014 ' + new Date().toLocaleTimeString()\n});\n\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 930,
+        "y": 380,
+        "wires": [
+            [
+                "linq-ha-rest",
+                "linq-low-balance-check",
+                "linq-debug"
+            ]
+        ]
+    },
+    {
+        "id": "linq-ha-rest",
+        "type": "function",
+        "z": "linq-tab",
+        "name": "Build HA REST request",
+        "func": "const haUrl = (env.get('HA_URL') || 'http://homeassistant.local:8123').replace(/\\/$/, '');\nconst haToken = env.get('HA_TOKEN') || '';\n\nif (!haToken) {\n    node.error('HA_TOKEN env var not set. Create one: HA \u2192 Profile \u2192 Security \u2192 Long-Lived Access Tokens');\n    node.status({ fill: 'red', shape: 'ring', text: 'Missing HA_TOKEN' });\n    return null;\n}\n\nmsg.url = haUrl + '/api/states/sensor.linq_meal_balance';\nmsg.method = 'POST';\nmsg.headers = {\n    'Authorization': 'Bearer ' + haToken,\n    'Content-Type': 'application/json'\n};\nreturn msg;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 460,
+        "y": 500,
+        "wires": [
+            [
+                "linq-ha-post"
+            ]
+        ]
+    },
+    {
+        "id": "linq-ha-post",
+        "type": "http request",
+        "z": "linq-tab",
+        "name": "POST to HA REST API",
+        "method": "use",
+        "ret": "obj",
+        "paytoqs": "ignore",
+        "url": "",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "authType": "",
+        "x": 680,
+        "y": 500,
+        "wires": [
+            [
+                "linq-ha-check"
+            ]
+        ]
+    },
+    {
+        "id": "linq-ha-check",
+        "type": "function",
+        "z": "linq-tab",
+        "name": "Check HA response",
+        "func": "if (msg.statusCode === 200 || msg.statusCode === 201) {\n    node.status({ fill: 'green', shape: 'dot', text: 'sensor.linq_meal_balance updated \u2713' });\n} else {\n    node.error('HA REST API error (' + msg.statusCode + '): ' + JSON.stringify(msg.payload));\n    node.status({ fill: 'red', shape: 'ring', text: 'HA error ' + msg.statusCode });\n}\nreturn null;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 900,
+        "y": 500,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "linq-low-balance-check",
+        "type": "function",
+        "z": "linq-tab",
+        "name": "Low balance alert (< $10)",
+        "func": "const THRESHOLD = 10;\nconst balance = msg.balance;\nconst lastBalance = flow.get('linq_last_balance') !== undefined ? flow.get('linq_last_balance') : 999;\n\nflow.set('linq_last_balance', balance);\n\n// Only notify once when crossing threshold\nif (balance < THRESHOLD && lastBalance >= THRESHOLD) {\n    const haUrl = (env.get('HA_URL') || 'http://homeassistant.local:8123').replace(/\\/$/, '');\n    const haToken = env.get('HA_TOKEN') || '';\n\n    msg.url = haUrl + '/api/services/notify/notify';\n    msg.method = 'POST';\n    msg.headers = {\n        'Authorization': 'Bearer ' + haToken,\n        'Content-Type': 'application/json'\n    };\n    msg.payload = {\n        title: 'Low Meal Balance',\n        message: '\u26a0\ufe0f Low meal balance: $' + balance.toFixed(2) + '. Add funds at linqconnect.com'\n    };\n    return msg;\n}\n\nreturn null;",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 480,
+        "y": 580,
+        "wires": [
+            [
+                "linq-notify-post"
+            ]
+        ]
+    },
+    {
+        "id": "linq-notify-post",
+        "type": "http request",
+        "z": "linq-tab",
+        "name": "POST notify to HA",
+        "method": "use",
+        "ret": "obj",
+        "paytoqs": "ignore",
+        "url": "",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "authType": "",
+        "x": 730,
+        "y": 580,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "linq-debug",
+        "type": "debug",
+        "z": "linq-tab",
+        "name": "Balance debug",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "x": 730,
+        "y": 440,
+        "wires": []
+    }
+]

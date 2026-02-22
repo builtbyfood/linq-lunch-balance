@@ -1,0 +1,18 @@
+# Never commit credentials or tokens
+*.env
+.env*
+secrets.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node-RED backup exports that might contain tokens
+*-backup.json
+flows_cred.json
